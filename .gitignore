@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.venv/
+# Dados dos containers (APPDATA_PATH, CACHE_PATH e MEDIA_PATH, padrão ./data)
+/data/
+/.data/
+# Chave de assinatura do Android (fica fora do repositório)
+*.jks
+*.keystore
+*.jks.base64
+key.properties

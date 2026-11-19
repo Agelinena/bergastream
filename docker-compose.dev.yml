@@ -1,0 +1,10 @@
+# Desenvolvimento local: expõe também a API (8000) no host. O app web já fica
+# na porta WEB_PORT (8080).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Ou ponha COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml no .env.
+services:
+  api:
+    ports:
+      - "8000:8000"

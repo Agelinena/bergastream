@@ -1,0 +1,28 @@
+# Testes do app a cada push e pull request (análise + testes do Flutter).
+# Os testes do backend rodam com o Docker: veja docs/DESENVOLVIMENTO.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  FLUTTER_VERSION: '3.44.0'
+
+jobs:
+  app:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test

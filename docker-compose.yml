@@ -1,0 +1,210 @@
+# Bergastream – Docker Compose
+#
+# Sobe tudo com `docker compose up -d` (configure o .env antes; modelo em
+# .env.example). O app web e a API ficam em http://<servidor>:${WEB_PORT}
+# (8080 por padrão). Para HTTPS e um domínio, ponha um proxy reverso
+# (Traefik, Caddy, nginx) na frente da porta do `web`: veja docs/DEPLOY.md.
+#
+# Só o `web` (nginx com o app web) recebe tráfego de fora. O nginx repassa
+# /api/ para a API, que fica na rede interna junto com banco, Redis, worker e
+# Deemix.
+#
+# Pastas (padrão ./data, ajuste no .env):
+#   ${APPDATA_PATH}/bergastream   banco, Redis, Deemix, Lidarr
+#   ${MEDIA_PATH}/musica          as músicas baixadas
+#   ${CACHE_PATH}/bergastream     dependências baixadas pelo teste do Spotify
+#
+# Opcional: o Lidarr melhora a qualidade das faixas de playlist (FLAC pela
+# Usenet). Liga com `docker compose --profile lidarr up -d` e precisa de um
+# SABnzbd e de um Prowlarr (ver docs/DEPLOY.md).
+#
+# Desenvolvimento local: docker-compose.dev.yml (portas 8080/8000).
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: bergastream-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${APPDATA_PATH:-./data}/bergastream/postgres:/var/lib/postgresql/data
+    networks:
+      - bergastream-internal
+    healthcheck:
+      test: pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    image: ghcr.io/amacneil/dbmate:2
+    container_name: bergastream-migrate
+    volumes:
+      - ./backend/db/migrations:/db/migrations:ro
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PGSSLMODE: disable
+    command: --migrations-dir /db/migrations up
+    networks:
+      - bergastream-internal
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Fork mantido do deemix (bambanah/deemix); a imagem antiga (bockiii) parou
+  # em 2022. Mesma API (/api/addToQueue etc.), mesmas pastas /config e /downloads.
+  deemix:
+    image: ghcr.io/bambanah/deemix:latest
+    container_name: bergastream-deemix
+    restart: unless-stopped
+    environment:
+      ARL: ${DEEMIX_ARL}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    volumes:
+      - ${APPDATA_PATH:-./data}/bergastream/deemix:/config
+      # Dentro da pasta de música: a API e o worker veem em /data/music/deemix_dl
+      - ${MEDIA_PATH:-./data/media}/musica/bergastream/deemix_dl:/downloads
+    networks:
+      - bergastream-internal
+      - bergastream-egress
+    healthcheck:
+      test: wget -qO- http://127.0.0.1:6595/api/connect >/dev/null 2>&1 || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: bergastream-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ${APPDATA_PATH:-./data}/bergastream/redis:/data
+    networks:
+      - bergastream-internal
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: ./backend
+    container_name: bergastream-worker
+    restart: unless-stopped
+    env_file: .env
+    environment: &backend-env
+      DATABASE_URL: ${DATABASE_URL}
+      MUSIC_DIR: /data/music
+      DEEMIX_URL: http://deemix:6595
+      REDIS_URL: redis://redis:6379/0
+      CACHE_TTL_HOURS: ${CACHE_TTL_HOURS:-48}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes: &backend-volumes
+      # Músicas (cache, permanent, variants, covers, image_cache, deemix_dl)
+      - ${MEDIA_PATH:-./data/media}/musica/bergastream:/data/music
+      # Cookies opcionais do YouTube (YT_COOKIES_FILE no .env), só leitura.
+      - ${APPDATA_PATH:-./data}/bergastream/youtube:/data/youtube:ro
+      # Versões novas da SpotifyScraper instaladas pelo teste diário do Spotify.
+      - ${CACHE_PATH:-./data/cache}/bergastream/pydeps:/data/pydeps
+      # Músicas baixadas pelo Lidarr (opcional), só leitura: o FLAC da faixa é
+      # copiado daqui (e o resto do álbum é apagado pelo próprio Lidarr).
+      - ${MEDIA_PATH:-./data/media}/musica/lidarr:/data/lidarr:ro
+    networks:
+      - bergastream-internal
+      - bergastream-egress
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: python worker.py
+
+  # Opcional (perfil "lidarr"): FLAC das faixas de playlist pela Usenet. O
+  # worker pede o álbum da faixa, copia a música e manda apagar o resto (a
+  # pasta de música é só passagem). Precisa de um SABnzbd e de um Prowlarr que
+  # ele alcance (ponha os três numa rede em comum) e de ver a pasta de
+  # downloads do SABnzbd no mesmo caminho (/downloads) para importar.
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: bergastream-lidarr
+    restart: unless-stopped
+    profiles: ["lidarr"]
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${APPDATA_PATH:-./data}/bergastream/lidarr:/config
+      - ${MEDIA_PATH:-./data/media}/musica/lidarr:/music
+      - ${MEDIA_PATH:-./data/media}/downloads:/downloads
+    networks:
+      - bergastream-internal   # o worker fala com ele aqui
+      - bergastream-egress     # servidor de metadados (MusicBrainz)
+
+  # Gera PO Tokens para o yt-dlp (o YouTube bloqueia menos o servidor no
+  # plano B do download). Sem autenticação: fica só na rede interna (nenhuma
+  # porta publicada); a rede de egress é para falar com o Google.
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
+    container_name: bergastream-pot
+    restart: unless-stopped
+    init: true
+    networks:
+      - bergastream-internal
+      - bergastream-egress
+
+  api:
+    build: ./backend
+    # Nome fixo: é o endereço que o nginx do `web` usa.
+    container_name: bergastream-api
+    restart: unless-stopped
+    env_file: .env
+    environment: *backend-env
+    volumes: *backend-volumes
+    networks:
+      - bergastream-internal
+      - bergastream-egress
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  web:
+    build:
+      context: ./frontend
+    container_name: bergastream-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    networks:
+      - bergastream-internal
+      - bergastream-web
+    depends_on:
+      - api
+
+networks:
+  # Banco e Redis sem saída para a internet.
+  bergastream-internal:
+    name: bergastream-internal
+    internal: true
+  # API, worker e Deemix buscam no Spotify/YouTube/Deezer.
+  bergastream-egress:
+    name: bergastream-egress
+  # Porta publicada do `web` (uma rede interna não publica portas).
+  bergastream-web:
+    name: bergastream-web
