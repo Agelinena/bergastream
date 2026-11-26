@@ -5,8 +5,13 @@
 # Arquivos publicados (os apps procuram exatamente estes nomes para se
 # atualizar; as versões antigas também olham o monorepo de onde o app saiu):
 #   bergastream-android.apk        APK universal assinado
-#   bergastream-linux-x64.tar.gz   pasta do app para Linux
-#   bergastream-windows-x64.zip    pasta do app para Windows
+#   bergastream-linux-x64.tar.gz        pasta do app para Linux (o app se
+#                                       atualiza trocando a pasta por esta)
+#   bergastream-install-linux.sh        instala o .tar.gz para o usuário, com
+#                                       atalho no menu
+#   bergastream-windows-x64-setup.exe   instalador do Windows (o app o roda em
+#                                       silêncio para se atualizar)
+#   bergastream-windows-x64.zip         pasta do app para Windows, sem instalar
 #
 # Assinatura do Android (Settings → Secrets and variables → Actions):
 #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
@@ -143,11 +148,17 @@ jobs:
           flutter build linux --release
           --build-name=${{ needs.version.outputs.name }}
           --build-number=${{ needs.version.outputs.number }}
-      - run: tar -C build/linux/x64/release -czf bergastream-linux-x64.tar.gz --transform 's,^bundle,bergastream,' bundle
+      - run: |
+          # Ícone para o atalho do menu (o script de instalação o usa).
+          cp web/icons/Icon-512.png build/linux/x64/release/bundle/bergastream.png
+          tar -C build/linux/x64/release -czf bergastream-linux-x64.tar.gz --transform 's,^bundle,bergastream,' bundle
+          cp linux/packaging/bergastream-install-linux.sh .
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: frontend/bergastream-linux-x64.tar.gz
+          path: |
+            frontend/bergastream-linux-x64.tar.gz
+            frontend/bergastream-install-linux.sh
 
   windows:
     timeout-minutes: 40
@@ -168,10 +179,24 @@ jobs:
           New-Item -ItemType Directory -Force pkg | Out-Null
           Copy-Item -Recurse build/windows/x64/runner/Release pkg/Bergastream
           Compress-Archive -Path pkg/Bergastream -DestinationPath bergastream-windows-x64.zip
+      - name: Instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y | Out-Null
+          }
+          & $iscc /Q "/DAppVersion=${{ needs.version.outputs.name }}" `
+            "/DSourceDir=$PWD\build\windows\x64\runner\Release" `
+            windows\installer\bergastream.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item dist\bergastream-windows-x64-setup.exe .
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: frontend/bergastream-windows-x64.zip
+          path: |
+            frontend/bergastream-windows-x64.zip
+            frontend/bergastream-windows-x64-setup.exe
 
   release:
     timeout-minutes: 15
@@ -197,6 +222,8 @@ jobs:
           files: |
             dist/bergastream-android.apk
             dist/bergastream-linux-x64.tar.gz
+            dist/bergastream-install-linux.sh
+            dist/bergastream-windows-x64-setup.exe
             dist/bergastream-windows-x64.zip
           body: |
             ## Bergastream ${{ needs.version.outputs.name }}
@@ -204,7 +231,7 @@ jobs:
             | Plataforma | Arquivo | Como instalar |
             |---|---|---|
             | Android 7+ | `bergastream-android.apk` | Abra o APK no celular e permita "instalar apps desconhecidos". |
-            | Windows 10/11 (64 bits) | `bergastream-windows-x64.zip` | Extraia e abra `Bergastream\bergastream.exe`. |
-            | Linux x64 | `bergastream-linux-x64.tar.gz` | Extraia e rode `bergastream/bergastream`. Precisa de `libmpv` (Debian/Ubuntu: `sudo apt install libmpv2`). |
+            | Windows 10/11 (64 bits) | `bergastream-windows-x64-setup.exe` | Abra o instalador (não pede administrador). Na primeira vez o Windows pode avisar que o app não é assinado: *Mais informações → Executar assim mesmo*. Sem instalar: `bergastream-windows-x64.zip`. |
+            | Linux x64 | `bergastream-install-linux.sh` | No terminal: `curl -fsSL https://github.com/Agelinena/bergastream/releases/latest/download/bergastream-install-linux.sh \| sh`. Instala para o seu usuário, sem `sudo`, com atalho no menu. Precisa de `libmpv` (Debian/Ubuntu: `sudo apt install libmpv2`). |
 
-            Os apps já instalados avisam desta versão sozinhos (ou em **Ajustes → Verificar atualizações**).
+            Os apps já instalados avisam desta versão sozinhos (ou em **Ajustes → Verificar atualizações**). A partir da 0.8.4, no Windows e no Linux instalado pelo script, **Atualizar agora** instala e reabre o app sozinho.

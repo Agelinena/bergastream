@@ -71,15 +71,19 @@ Future<void> checkForUpdatesManually(
   }
 }
 
-/// Pergunta "Agora não" / "Ver no GitHub" / "Baixar (e instalar)".
+/// Pergunta "Agora não" / "Ver no GitHub" / "Atualizar agora" (ou
+/// "Baixar", quando este aparelho não instala sozinho).
 Future<void> offerUpdate(
   BuildContext context,
   WidgetRef ref,
   UpdateAvailable update,
 ) async {
   final service = ref.read(updateServiceProvider);
+  final launcher = ref.read(updateLauncherProvider);
   final target = ref.read(updateTargetProvider)!;
   final release = update.release;
+  final direct = await launcher.canInstall(target);
+  if (!context.mounted) return;
   final choice = await showChoiceDialog(
     context,
     message:
@@ -89,25 +93,30 @@ Future<void> offerUpdate(
     options: [
       'Agora não',
       'Ver no GitHub',
-      target.installsDirectly ? 'Baixar e instalar' : 'Baixar',
+      switch ((target, direct)) {
+        (UpdateTarget.android, _) => 'Baixar e instalar',
+        (_, true) => 'Atualizar agora',
+        (_, false) => 'Baixar',
+      },
     ],
   );
   if (!context.mounted) return;
   switch (choice) {
     case 1:
-      await ref.read(updateLauncherProvider).openPage(release.pageUrl);
+      await launcher.openPage(release.pageUrl);
     case 2:
-      await _downloadAndOpen(context, ref, update);
+      await _downloadAndInstall(context, ref, update, direct: direct);
     default:
       await service.skip(release);
   }
 }
 
-Future<void> _downloadAndOpen(
+Future<void> _downloadAndInstall(
   BuildContext context,
   WidgetRef ref,
-  UpdateAvailable update,
-) async {
+  UpdateAvailable update, {
+  required bool direct,
+}) async {
   final service = ref.read(updateServiceProvider);
   final launcher = ref.read(updateLauncherProvider);
   final target = ref.read(updateTargetProvider)!;
@@ -120,11 +129,16 @@ Future<void> _downloadAndOpen(
     builder: (_) => _DownloadProgressDialog(progress: progress),
   );
   String? path;
+  var result = UpdateInstall.failed;
   try {
     path = await service.download(
       update.release,
+      direct: direct,
       onProgress: (p) => progress.value = p,
     );
+    // Instala com o aviso "Baixando…" ainda na tela (no Linux, extrair
+    // leva alguns segundos).
+    if (direct) result = await launcher.install(target, path);
   } on Object {
     path = null;
   } finally {
@@ -137,15 +151,28 @@ Future<void> _downloadAndOpen(
     AppToast.show(context, 'Falha ao baixar. Tente pelo GitHub.');
     return;
   }
-  // Android: abre o instalador. Desktop: abre a pasta com o pacote.
-  final opened = await launcher.open(
-    target.installsDirectly ? path : File(path).parent.path,
-  );
-  if (!context.mounted) return;
-  if (!target.installsDirectly) {
-    AppToast.show(context, 'Atualização salva em Downloads');
-  } else if (!opened) {
-    AppToast.show(context, 'Não foi possível abrir o instalador');
+  if (!direct) {
+    // Desktop sem permissão para se trocar: o pacote fica em Downloads.
+    await launcher.open(File(path).parent.path);
+    if (context.mounted) {
+      AppToast.show(context, 'Atualização salva em Downloads');
+    }
+    return;
+  }
+  switch (result) {
+    case UpdateInstall.opened:
+      break;
+    case UpdateInstall.restarting:
+      AppToast.show(context, 'Atualizando… o Bergastream abre de novo sozinho');
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      await launcher.quit();
+    case UpdateInstall.failed:
+      AppToast.show(
+        context,
+        target == UpdateTarget.android
+            ? 'Não foi possível abrir o instalador'
+            : 'Não foi possível instalar. Tente pelo GitHub.',
+      );
   }
 }
 

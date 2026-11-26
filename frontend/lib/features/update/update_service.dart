@@ -11,21 +11,18 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/platform/app_platform.dart';
 import '../../core/storage/key_value_store.dart';
 import 'app_release.dart';
+import 'desktop_updater.dart';
 
 /// Plataformas que recebem atualização pelo GitHub.
 enum UpdateTarget {
   android(AppRelease.androidAsset),
   linux(AppRelease.linuxAsset),
-  windows(AppRelease.windowsAsset);
+  windows(AppRelease.windowsSetupAsset);
 
   const UpdateTarget(this.asset);
 
   /// Nome do arquivo desta plataforma na release.
   final String asset;
-
-  /// No Android o APK abre o instalador; no desktop o pacote é salvo em
-  /// Downloads e a pasta é aberta.
-  bool get installsDirectly => this == UpdateTarget.android;
 
   /// Plataforma atual; nulo na web, na simulação e em sistemas sem pacote.
   static UpdateTarget? of(AppPlatform platform) {
@@ -121,23 +118,78 @@ final updateRepositoryProvider = Provider<UpdateRepository>(
   (ref) => GitHubUpdateRepository(),
 );
 
-/// Abre arquivos e links fora do app (instalador, pasta, navegador).
-abstract interface class UpdateLauncher {
-  /// Pasta onde o pacote é salvo.
-  Future<String> folderFor(UpdateTarget target);
+/// Como terminou a instalação de uma versão baixada.
+enum UpdateInstall {
+  /// Android: o instalador do sistema abriu.
+  opened,
 
-  /// Abre o APK (instalador) ou a pasta do pacote. Falso se não conseguiu.
+  /// Windows/Linux: a versão nova está sendo instalada; o app deve fechar
+  /// ([UpdateLauncher.quit]) e abre de novo sozinho.
+  restarting,
+
+  /// Não deu para instalar.
+  failed,
+}
+
+/// Abre arquivos e links fora do app e instala as versões baixadas.
+abstract interface class UpdateLauncher {
+  /// Este aparelho instala a versão sozinho? Android e Windows sempre; o
+  /// Linux quando a pasta do app pode ser trocada. Se não, o pacote vai para
+  /// Downloads e a pasta é aberta.
+  Future<bool> canInstall(UpdateTarget target);
+
+  /// Pasta onde o pacote é salvo: a temporária, quando [direct] (o app
+  /// instala), ou Downloads.
+  Future<String> folderFor({required bool direct});
+
+  /// Instala o pacote em [path].
+  Future<UpdateInstall> install(UpdateTarget target, String path);
+
+  /// Abre um arquivo ou pasta. Falso se não conseguiu.
   Future<bool> open(String path);
 
   Future<bool> openPage(String url);
+
+  /// Fecha o app (depois de [UpdateInstall.restarting]).
+  Future<void> quit();
 }
 
 class SystemUpdateLauncher implements UpdateLauncher {
   @override
-  Future<String> folderFor(UpdateTarget target) async {
-    if (target.installsDirectly) return (await getTemporaryDirectory()).path;
+  Future<bool> canInstall(UpdateTarget target) async => switch (target) {
+    UpdateTarget.android || UpdateTarget.windows => true,
+    UpdateTarget.linux => DesktopUpdater.canSwapLinuxBundle(),
+  };
+
+  @override
+  Future<String> folderFor({required bool direct}) async {
+    if (direct) return (await getTemporaryDirectory()).path;
     final downloads = await getDownloadsDirectory();
-    return (downloads ?? await getApplicationDocumentsDirectory()).path;
+    return (downloads ?? await getTemporaryDirectory()).path;
+  }
+
+  @override
+  Future<UpdateInstall> install(UpdateTarget target, String path) async {
+    try {
+      switch (target) {
+        case UpdateTarget.android:
+          return await open(path) ? UpdateInstall.opened : UpdateInstall.failed;
+        case UpdateTarget.windows:
+          await DesktopUpdater.runWindowsInstaller(path);
+        case UpdateTarget.linux:
+          final exe = await DesktopUpdater.swapBundle(
+            archive: path,
+            dir: DesktopUpdater.bundleDir,
+            executable: File(Platform.resolvedExecutable).uri.pathSegments.last,
+          );
+          await File(path).delete();
+          await DesktopUpdater.relaunch(exe);
+      }
+      return UpdateInstall.restarting;
+    } on Object catch (e) {
+      debugPrint('Atualização não instalada: $e');
+      return UpdateInstall.failed;
+    }
   }
 
   @override
@@ -154,6 +206,9 @@ class SystemUpdateLauncher implements UpdateLauncher {
   @override
   Future<bool> openPage(String url) =>
       launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+
+  @override
+  Future<void> quit() async => exit(0);
 }
 
 final updateLauncherProvider = Provider<UpdateLauncher>(
@@ -232,13 +287,17 @@ class UpdateService {
   Future<void> skip(AppRelease release) =>
       _store.write(skippedKey, release.version.toString());
 
-  /// Baixa o pacote da plataforma. Devolve o caminho do arquivo.
+  /// Baixa o pacote da plataforma. Devolve o caminho do arquivo. [direct]:
+  /// o app vai instalar ([UpdateLauncher.folderFor]).
   Future<String> download(
     AppRelease release, {
+    required bool direct,
     void Function(double progress)? onProgress,
   }) async {
     final target = _ref.read(updateTargetProvider)!;
-    final folder = await _ref.read(updateLauncherProvider).folderFor(target);
+    final folder = await _ref
+        .read(updateLauncherProvider)
+        .folderFor(direct: direct);
     final name = target.asset.replaceFirst(
       'bergastream-',
       'bergastream-${release.version}-',

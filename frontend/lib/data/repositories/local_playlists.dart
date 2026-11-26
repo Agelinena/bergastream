@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/app_platform.dart';
+import '../../core/storage/app_dirs.dart';
 import '../../core/storage/key_value_store.dart';
 import '../../features/downloads/download_manager.dart';
 
@@ -74,10 +75,20 @@ class LocalPlaylists extends Notifier<List<LocalPlaylist>> {
   Future<void> _load() async {
     final raw = await _store.read(_key);
     if (raw == null) return;
-    state = [
+    final loaded = [
       for (final p in jsonDecode(raw) as List<dynamic>)
         LocalPlaylist.fromJson(p as Map<String, dynamic>),
     ];
+    // Fotos guardadas na pasta Documentos (desktop, até a 0.8.3).
+    final remapped = [
+      for (final p in loaded)
+        switch (AppDirs.remap(p.coverPath)) {
+          final path? => p.copyWith(coverPath: path),
+          null => p,
+        },
+    ];
+    state = remapped;
+    if (!listEquals(remapped, loaded)) await _save();
   }
 
   Future<void> _save() =>

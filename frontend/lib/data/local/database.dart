@@ -1,8 +1,10 @@
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/app_platform.dart';
+import '../../core/storage/app_dirs.dart';
 import '../../core/widgets/download_state_icon.dart';
 import '../models/playlist_models.dart';
 import '../models/search_result.dart';
@@ -181,8 +183,16 @@ class PlaylistDownloadProgress {
 class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
-  /// Banco do app no aparelho (`bergastream.sqlite`).
-  factory AppDatabase.open() => AppDatabase(driftDatabase(name: 'bergastream'));
+  /// Banco do app no aparelho (`bergastream.sqlite`), na pasta de dados
+  /// ([AppDirs]): no desktop, fora da pasta Documentos.
+  factory AppDatabase.open() => AppDatabase(
+    driftDatabase(
+      name: AppDirs.name,
+      native: const DriftNativeOptions(
+        databaseDirectory: AppDirs.dataDirectory,
+      ),
+    ),
+  );
 
   /// Versões e migrações desde o início (Seção 10).
   @override
@@ -205,7 +215,32 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(localTracks, localTracks.needsReplace);
       }
     },
+    beforeOpen: (_) => _remapDownloadPaths(),
   );
+
+  /// Downloads que vieram da pasta Documentos (até a 0.8.3, no desktop):
+  /// troca o começo dos caminhos guardados pela pasta nova. Não faz nada
+  /// quando não há caminho antigo.
+  @visibleForTesting
+  Future<void> remapDownloadPathsForTest() => _remapDownloadPaths();
+
+  Future<void> _remapDownloadPaths() async {
+    final prefixes = AppDirs.remapPrefixes;
+    if (prefixes == null) return;
+    final (:from, :to) = prefixes;
+    final old = '$from/';
+    for (final (table, column) in const [
+      ('local_tracks', 'audio_path'),
+      ('local_tracks', 'cover_path'),
+      ('local_playlists', 'cover_path'),
+    ]) {
+      await customStatement(
+        'UPDATE $table SET $column = ? || substr($column, ?) '
+        'WHERE substr($column, 1, ?) = ?',
+        [to, from.length + 1, old.length, old],
+      );
+    }
+  }
 
   // ── Playlists baixadas ────────────────────────────────────────
 

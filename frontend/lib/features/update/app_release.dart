@@ -22,6 +22,10 @@ class AppRelease {
   static const linuxAsset = 'bergastream-linux-x64.tar.gz';
   static const windowsAsset = 'bergastream-windows-x64.zip';
 
+  /// Instalador do Windows (desde a 0.8.4): é o que o app baixa para se
+  /// atualizar. O `.zip` continua saindo para quem não quer instalar.
+  static const windowsSetupAsset = 'bergastream-windows-x64-setup.exe';
+
   final AppVersion version;
   final String tag;
 

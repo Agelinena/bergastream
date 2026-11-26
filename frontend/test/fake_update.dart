@@ -12,6 +12,7 @@ AppRelease release(String version, {Map<String, String>? assets}) => AppRelease(
         AppRelease.androidAsset: 'https://dl/android.apk',
         AppRelease.linuxAsset: 'https://dl/linux.tar.gz',
         AppRelease.windowsAsset: 'https://dl/windows.zip',
+        AppRelease.windowsSetupAsset: 'https://dl/windows-setup.exe',
       },
 );
 
@@ -47,12 +48,33 @@ class FakeUpdateRepository implements UpdateRepository {
 }
 
 class FakeUpdateLauncher implements UpdateLauncher {
+  FakeUpdateLauncher({
+    this.desktopInstalls = false,
+    this.result = UpdateInstall.restarting,
+  });
+
+  /// Linux/Windows: o app instala sozinho (Android sempre instala).
+  final bool desktopInstalls;
+  final UpdateInstall result;
   final opened = <String>[];
   final pages = <String>[];
+  final installed = <(UpdateTarget, String)>[];
+  var quits = 0;
 
   @override
-  Future<String> folderFor(UpdateTarget target) async =>
-      target.installsDirectly ? '/tmp/cache' : '/home/u/Downloads';
+  Future<bool> canInstall(UpdateTarget target) async =>
+      target == UpdateTarget.android || desktopInstalls;
+
+  @override
+  Future<String> folderFor({required bool direct}) async =>
+      direct ? '/tmp/cache' : '/home/u/Downloads';
+
+  @override
+  Future<UpdateInstall> install(UpdateTarget target, String path) async {
+    installed.add((target, path));
+    if (target == UpdateTarget.android) opened.add(path);
+    return target == UpdateTarget.android ? UpdateInstall.opened : result;
+  }
 
   @override
   Future<bool> open(String path) async {
@@ -65,4 +87,7 @@ class FakeUpdateLauncher implements UpdateLauncher {
     pages.add(url);
     return true;
   }
+
+  @override
+  Future<void> quit() async => quits++;
 }

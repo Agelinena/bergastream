@@ -213,26 +213,94 @@ void main() {
       expect(find.textContaining('Baixando'), findsNothing);
     });
 
-    testWidgets('Linux: "Baixar" salva em Downloads e abre a pasta', (
+    testWidgets(
+      'Linux sem permissão: "Baixar" salva em Downloads e abre a pasta',
+      (tester) async {
+        final repo = FakeUpdateRepository(published: release('0.2.0'));
+        final launcher = FakeUpdateLauncher();
+        await openWithUpdate(
+          tester,
+          target: UpdateTarget.linux,
+          repo: repo,
+          launcher: launcher,
+        );
+        expect(find.text('Baixar e instalar'), findsNothing);
+        await tester.tap(find.text('Baixar'));
+        await tester.pumpAndSettle();
+        expect(
+          repo.downloads.single.$2,
+          '/home/u/Downloads/bergastream-0.2.0-linux-x64.tar.gz',
+        );
+        expect(launcher.opened, ['/home/u/Downloads']);
+        expect(find.text('Atualização salva em Downloads'), findsOneWidget);
+      },
+    );
+
+    testWidgets('Linux instalável: "Atualizar agora" troca o app e fecha', (
       tester,
     ) async {
       final repo = FakeUpdateRepository(published: release('0.2.0'));
-      final launcher = FakeUpdateLauncher();
+      final launcher = FakeUpdateLauncher(desktopInstalls: true);
       await openWithUpdate(
         tester,
         target: UpdateTarget.linux,
         repo: repo,
         launcher: launcher,
       );
-      expect(find.text('Baixar e instalar'), findsNothing);
-      await tester.tap(find.text('Baixar'));
+      await tester.tap(find.text('Atualizar agora'));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      expect(launcher.installed.single, (
+        UpdateTarget.linux,
+        '/tmp/cache/bergastream-0.2.0-linux-x64.tar.gz',
+      ));
+      expect(launcher.opened, isEmpty);
+      expect(launcher.quits, 1);
       await tester.pumpAndSettle();
-      expect(
-        repo.downloads.single.$2,
-        '/home/u/Downloads/bergastream-0.2.0-linux-x64.tar.gz',
+    });
+
+    testWidgets('Windows: baixa o instalador, roda e fecha o app', (
+      tester,
+    ) async {
+      final repo = FakeUpdateRepository(published: release('0.2.0'));
+      final launcher = FakeUpdateLauncher(desktopInstalls: true);
+      await openWithUpdate(
+        tester,
+        target: UpdateTarget.windows,
+        repo: repo,
+        launcher: launcher,
       );
-      expect(launcher.opened, ['/home/u/Downloads']);
-      expect(find.text('Atualização salva em Downloads'), findsOneWidget);
+      await tester.tap(find.text('Atualizar agora'));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      expect(repo.downloads.single, (
+        'https://dl/windows-setup.exe',
+        '/tmp/cache/bergastream-0.2.0-windows-x64-setup.exe',
+      ));
+      expect(launcher.installed.single.$1, UpdateTarget.windows);
+      expect(launcher.quits, 1);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('instalação falhou: avisa e não fecha o app', (tester) async {
+      final repo = FakeUpdateRepository(published: release('0.2.0'));
+      final launcher = FakeUpdateLauncher(
+        desktopInstalls: true,
+        result: UpdateInstall.failed,
+      );
+      await openWithUpdate(
+        tester,
+        target: UpdateTarget.linux,
+        repo: repo,
+        launcher: launcher,
+      );
+      await tester.tap(find.text('Atualizar agora'));
+      await tester.pumpAndSettle();
+      expect(launcher.quits, 0);
+      expect(
+        find.text('Não foi possível instalar. Tente pelo GitHub.'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('"Ver no GitHub" abre a página da versão', (tester) async {

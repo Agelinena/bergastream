@@ -5,10 +5,10 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../../core/network/api_error.dart';
 import '../../core/network/connectivity.dart';
+import '../../core/storage/app_dirs.dart';
 import '../../core/widgets/download_state_icon.dart';
 import '../../data/local/database.dart';
 import '../../data/models/playlist_models.dart';
@@ -26,12 +26,10 @@ class DownloadPaths {
   final String audio;
   final String covers;
 
-  static Future<DownloadPaths> appDocuments() async {
-    final base = (await getApplicationDocumentsDirectory()).path;
-    final paths = DownloadPaths(
-      audio: '$base/bergastream/audio',
-      covers: '$base/bergastream/capas',
-    );
+  /// Na pasta de dados do app ([AppDirs]); no desktop, fora de Documentos.
+  static Future<DownloadPaths> appData() async {
+    final base = await AppDirs.downloadsBase();
+    final paths = DownloadPaths(audio: '$base/audio', covers: '$base/capas');
     await Directory(paths.audio).create(recursive: true);
     await Directory(paths.covers).create(recursive: true);
     return paths;
@@ -474,7 +472,7 @@ final networkCheckProvider = Provider<NetworkCheck>(
 );
 
 final downloadPathsProvider = Provider<Future<DownloadPaths> Function()>(
-  (ref) => DownloadPaths.appDocuments,
+  (ref) => DownloadPaths.appData,
 );
 
 /// Estados de download por faixa (`provider:externalId`), para os ícones.

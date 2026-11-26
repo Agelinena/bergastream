@@ -6,14 +6,23 @@ Os apps são gerados pelo GitHub Actions (`.github/workflows/release.yml`) quand
 | Arquivo | Plataforma |
 |---|---|
 | `bergastream-android.apk` | Android 7+ (APK universal, assinado) |
-| `bergastream-windows-x64.zip` | Windows 10/11 64 bits |
-| `bergastream-linux-x64.tar.gz` | Linux x64 |
+| `bergastream-windows-x64-setup.exe` | Windows 10/11 64 bits: instalador (sem administrador) |
+| `bergastream-windows-x64.zip` | Windows: a mesma pasta, para usar sem instalar |
+| `bergastream-install-linux.sh` | Linux x64: instala o `.tar.gz` para o usuário, com atalho no menu |
+| `bergastream-linux-x64.tar.gz` | Linux x64: a pasta do app |
 
 Os apps instalados consultam essas releases ao abrir (no máximo uma vez a cada 20 h) e em
 **Ajustes → Verificar atualizações**. Havendo versão nova, perguntam:
 
 - **Baixar e instalar** (Android): baixa o APK e abre o instalador do sistema.
-- **Baixar** (Windows/Linux): salva o pacote em Downloads e abre a pasta.
+- **Atualizar agora** (Windows; Linux instalado pelo script ou numa pasta com permissão de
+  escrita): baixa, instala e reabre o app sozinho.
+  - Windows: roda o instalador em silêncio (`/VERYSILENT`); ele fecha o app, troca os arquivos
+    e o abre de novo (`frontend/windows/installer/bergastream.iss`).
+  - Linux: extrai o `.tar.gz` ao lado da pasta do app, troca as duas de nome e reabre; a pasta
+    antiga (`<pasta>.old`) é apagada na abertura seguinte (`desktop_updater.dart`).
+- **Baixar** (Linux sem permissão para trocar a pasta do app): salva o pacote em Downloads e
+  abre a pasta.
 - **Ver no GitHub**: abre a página da versão.
 - **Agora não**: não pergunta de novo por essa versão (só por uma mais nova).
 
@@ -83,8 +92,20 @@ Sem `android/key.properties` o APK de release sai com a chave de debug (serve pa
   (e para o Bergastream, na primeira atualização pelo app). Para o Android Auto mostrar o app
   (instalado fora da Play Store): no app Android Auto, toque 10 vezes em "Versão" e ligue
   **Fontes desconhecidas** nas configurações de desenvolvedor.
-- **Windows:** o executável não é assinado; o SmartScreen pode avisar ("Mais informações →
-  Executar assim mesmo").
+- **Windows:** o instalador não é assinado; na primeira instalação o SmartScreen pode avisar
+  ("Mais informações → Executar assim mesmo"). Instala em `%LOCALAPPDATA%\Programs\Bergastream`.
 - **Linux:** `libmpv` (áudio) e um chaveiro do sistema (`libsecret`, para guardar o login):
-  `sudo apt install libmpv2 libsecret-1-0 gnome-keyring` (Debian/Ubuntu). Extraia e rode
-  `bergastream/bergastream`.
+  `sudo apt install libmpv2 libsecret-1-0 gnome-keyring` (Debian/Ubuntu). Depois:
+  `curl -fsSL https://github.com/Agelinena/bergastream/releases/latest/download/bergastream-install-linux.sh | sh`
+  (instala em `~/.local/share/bergastream`; `--desinstalar` remove).
+
+## Onde o app guarda os dados (desktop)
+
+Banco (`bergastream.sqlite`) e músicas baixadas (`bergastream/audio`, `bergastream/capas`) ficam
+na pasta de dados do app, nunca em Documentos:
+
+- Linux: `~/.local/share/com.bergastream.app/`
+- Windows: `%APPDATA%\com.bergastream\Bergastream\`
+
+Até a 0.8.3 ficavam na pasta Documentos; na primeira abertura da 0.8.4 o app move tudo e
+corrige os caminhos guardados (`frontend/lib/core/storage/app_dirs.dart`).
